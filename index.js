@@ -192,16 +192,22 @@ app.get('/', (req, res) => {
   res.send('Echoes of Creation is listening!');
 });
 
-// Main webhook endpoint - Updated to match the working pattern
+// Main webhook endpoint - Updated to match Dreamnet's data structure
 app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
-  console.log(`\n--- Webhook Received: [Speaker: ${req.body.speaker}] ---`);
+  console.log(`\n--- Webhook Received ---`);
   console.log("Request body:", JSON.stringify(req.body, null, 2));
 
-  const { conversationId, text, speaker, eventType } = req.body;
+  const { roomId, text, eventType, agentId, userId } = req.body;
 
-  if (!conversationId || !speaker) {
+  if (!roomId || !text) {
     return res.status(400).send('Missing required fields');
   }
+
+  // Use roomId as conversationId and determine speaker from eventType
+  const conversationId = roomId;
+  const speaker = eventType === 'request' ? 'user' : 'assistant';
+
+  console.log(`Event Type: ${eventType}, Speaker: ${speaker}`);
 
   // Initialize story memory for this conversation
   if (!storyMemory[conversationId]) {
@@ -216,8 +222,8 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   let responseBody = { ...req.body };
 
   // Handle different event types and speakers
-  if (speaker.toLowerCase() !== 'user') {
-    // Check if we should generate content (every 4th message)
+  if (eventType === 'response') {
+    // This is an assistant response - check if we should generate content
     if (currentStory.length > 0 && currentStory.length % 4 === 0) {
       console.log("Triggering content generation...");
       const { text: generatedStoryText, imageUrl } = await generateContent(currentStory);
@@ -235,14 +241,9 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
       responseBody.saveModified = false;
     }
   } else {
-    // Handle user messages
-    if (eventType === "request") {
-      responseBody.text = "Hello, how are you?";
-      responseBody.saveModified = true;
-    } else {
-      responseBody.text = "I am doing well, thank you for asking.";
-      responseBody.saveModified = false;
-    }
+    // Handle user messages (eventType === 'request')
+    // Keep original user text, don't modify
+    responseBody.saveModified = false;
   }
 
   console.log("Final response body:", JSON.stringify(responseBody, null, 2));
