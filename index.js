@@ -16,6 +16,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const BLOB_READ_WRITE_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
 
 app.use(cors()); // Enable CORS for all origins
+
+// Modified body parser to properly handle raw body for signature verification
 app.use(bodyParser.json({
   verify: (req, res, buf) => {
     req.rawBody = buf; // Store the raw body for signature verification
@@ -24,26 +26,56 @@ app.use(bodyParser.json({
 
 const storyMemory = {};
 
-// --- Signature Verification Middleware ---
-function verifySignature(req, res, next) {
+// --- Fixed Signature Verification Function ---
+function verifySignature(rawBody, signature, secret) {
+  try {
+    const cleanSignature = signature?.trim();
+    if (!cleanSignature) return false;
+
+    const hmac = crypto.createHmac("sha256", secret);
+    const rawBodyStr = typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody);
+    hmac.update(rawBodyStr);
+    const expected = hmac.digest("base64");
+
+    return crypto.timingSafeEqual(
+      Buffer.from(cleanSignature),
+      Buffer.from(expected)
+    );
+  } catch (error) {
+    console.error("Signature verification error:", error);
+    return false;
+  }
+}
+
+// --- Updated Signature Verification Middleware ---
+function verifySignatureMiddleware(req, res, next) {
   const signature = req.headers['x-signature'];
+  
+  if (!WEBHOOK_SECRET) {
+    console.error("WEBHOOK_SECRET is not set");
+    return res.status(500).send("Webhook secret is not set");
+  }
+
   if (!signature) {
     console.warn('Webhook received without x-signature header.');
-    // For Vercel deployment, we might allow requests without signature for testing
+    // For development, you might want to allow requests without signature
     if (process.env.NODE_ENV === 'development') {
+      console.log('Development mode: allowing request without signature');
       return next();
     }
     return res.status(403).send('Forbidden: Missing signature');
   }
 
-  const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
-  const digest = hmac.update(req.rawBody).digest('base64');
-
-  if (digest !== signature) {
+  // Use the raw body for signature verification
+  const rawBodyStr = req.rawBody ? req.rawBody.toString() : JSON.stringify(req.body);
+  const isValid = verifySignature(rawBodyStr, signature, WEBHOOK_SECRET);
+  
+  if (!isValid) {
     console.warn('Webhook received with invalid signature.');
     return res.status(403).send('Forbidden: Invalid signature');
   }
 
+  console.log('Signature verification successful');
   next();
 }
 
@@ -156,32 +188,36 @@ function generateContent(story) {
   });
 }
 
-
-
 app.get('/', (req, res) => {
   res.send('Echoes of Creation is listening!');
 });
 
-// Main webhook endpoint
-app.post('/webhook', verifySignature, async (req, res) => {
+// Main webhook endpoint - Updated to match the working pattern
+app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   console.log(`\n--- Webhook Received: [Speaker: ${req.body.speaker}] ---`);
+  console.log("Request body:", JSON.stringify(req.body, null, 2));
 
-  const { conversationId, text, speaker } = req.body;
+  const { conversationId, text, speaker, eventType } = req.body;
 
   if (!conversationId || !speaker) {
     return res.status(400).send('Missing required fields');
   }
 
+  // Initialize story memory for this conversation
   if (!storyMemory[conversationId]) {
     storyMemory[conversationId] = [];
   }
 
+  // Add current message to story memory
   storyMemory[conversationId].push({ speaker, text, timestamp: new Date().toISOString() });
   const currentStory = storyMemory[conversationId];
 
-  let responseBody = req.body;
+  // Prepare response body (copy all original data)
+  let responseBody = { ...req.body };
 
+  // Handle different event types and speakers
   if (speaker.toLowerCase() !== 'user') {
+    // Check if we should generate content (every 4th message)
     if (currentStory.length > 0 && currentStory.length % 4 === 0) {
       console.log("Triggering content generation...");
       const { text: generatedStoryText, imageUrl } = await generateContent(currentStory);
@@ -193,9 +229,20 @@ app.post('/webhook', verifySignature, async (req, res) => {
       modifiedText += " As a reward, I will perform an incantation to grant you 0.1 SOL.";
 
       responseBody.text = modifiedText;
+      responseBody.saveModified = true; // Save the modified text to chat history
+    } else {
+      // For other assistant messages, keep original text but don't save modifications
+      responseBody.saveModified = false;
     }
-
-    // responseBody = transformForSwig(responseBody);
+  } else {
+    // Handle user messages
+    if (eventType === "request") {
+      responseBody.text = "Hello, how are you?";
+      responseBody.saveModified = true;
+    } else {
+      responseBody.text = "I am doing well, thank you for asking.";
+      responseBody.saveModified = false;
+    }
   }
 
   console.log("Final response body:", JSON.stringify(responseBody, null, 2));
