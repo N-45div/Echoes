@@ -31,6 +31,29 @@ const emotionMap = {
   chaotic: ['chaos', 'wild', 'crazy', 'insane', 'mad', 'frantic', 'explosion']
 };
 
+// Swig action triggers mapping
+const swigActionTriggers = {
+  CREATE_SWIG: ['create swig', 'make swig', 'new swig', 'setup swig', 'initialize swig', 'start swig', 'build swig'],
+  GET_SWIG_BALANCE: ['swig balance', 'check swig', 'balance of swig', 'how much in swig', 'swig wallet balance'],
+  GET_SWIG_TOKEN_BALANCE: ['swig token balance', 'swig spl balance', 'token balance in swig', 'spl balance in swig'],
+  GET_SWIG_AUTHORITIES: ['swig authorities', 'authorities on swig', 'swig signers', 'who can sign', 'list authorities'],
+  ADD_SWIG_AUTHORITY: ['add authority', 'add signer', 'grant access', 'add to swig'],
+  TRANSFER_TO_SWIG: ['transfer to swig', 'send to swig', 'fund swig', 'deposit to swig'],
+  TRANSFER_TOKEN_TO_SWIG: ['transfer token to swig', 'send token to swig', 'transfer spl to swig', 'fund swig with token'],
+  SWIG_TRANSFER_TO_ADDRESS: ['transfer from swig', 'send from swig', 'swig transfer to', 'use swig to transfer'],
+  SWIG_TRANSFER_TOKEN_TO_ADDRESS: ['transfer token from swig', 'send token from swig', 'swig transfer token to'],
+  SWIG_TRANSFER_TO_AUTHORITY: ['transfer from swig to authority', 'send from swig to authority', 'swig transfer to authority'],
+  SWIG_TRANSFER_TOKEN_TO_AUTHORITY: ['transfer token from swig to authority', 'swig transfer token to authority']
+};
+
+// Reward-based Swig actions
+const rewardActions = {
+  bronze: { amount: 0.05, message: "🥉 Bronze achievement! Granting you 0.05 SOL from my mystical reserves." },
+  silver: { amount: 0.1, message: "🥈 Silver mastery! Bestowing 0.1 SOL upon you from the archives." },
+  gold: { amount: 0.25, message: "🥇 Golden triumph! Rewarding you with 0.25 SOL from my treasury." },
+  legendary: { amount: 0.5, message: "👑 Legendary status! You have earned 0.5 SOL from the cosmic vault!" }
+};
+
 app.use(cors()); // Enable CORS for all origins
 
 // Modified body parser to properly handle raw body for signature verification
@@ -42,11 +65,12 @@ app.use(bodyParser.json({
 
 // Story progress tracking for dynamic rewards
 const storyProgress = {};
+const userWallets = {}; // Track user wallet addresses
 const rewardTiers = {
-  bronze: { threshold: 5, reward: 0.1, emoji: "🥉" },
-  silver: { threshold: 15, reward: 0.25, emoji: "🥈" },
-  gold: { threshold: 30, reward: 0.5, emoji: "🥇" },
-  legendary: { threshold: 50, reward: 1.0, emoji: "👑" }
+  bronze: { threshold: 5, reward: 0.05, emoji: "🥉" },
+  silver: { threshold: 15, reward: 0.1, emoji: "🥈" },
+  gold: { threshold: 30, reward: 0.25, emoji: "🥇" },
+  legendary: { threshold: 50, reward: 0.5, emoji: "👑" }
 };
 
 // --- Fixed Signature Verification Function ---
@@ -102,6 +126,45 @@ function verifySignatureMiddleware(req, res, next) {
   next();
 }
 
+// --- Swig Action Detection ---
+function detectSwigAction(text) {
+  const lowercaseText = text.toLowerCase();
+  
+  for (const [action, triggers] of Object.entries(swigActionTriggers)) {
+    if (triggers.some(trigger => lowercaseText.includes(trigger))) {
+      return action;
+    }
+  }
+  return null;
+}
+
+// --- Generate Swig Action Prompt ---
+function generateSwigActionPrompt(action, userText, userAddress = null) {
+  const prompts = {
+    CREATE_SWIG: "Can you create a new swig wallet for me?",
+    GET_SWIG_BALANCE: "What's the balance of my swig wallet?",
+    GET_SWIG_TOKEN_BALANCE: "Get swig token balance for the requested token",
+    GET_SWIG_AUTHORITIES: "List swig signers and authorities",
+    ADD_SWIG_AUTHORITY: userAddress ? `Add authority ${userAddress} to my swig wallet.` : "Add the requested authority to my swig wallet.",
+    TRANSFER_TO_SWIG: "Fund the swig with 0.1 SOL from my main wallet.",
+    TRANSFER_TOKEN_TO_SWIG: "Transfer tokens to swig wallet as requested.",
+    SWIG_TRANSFER_TO_ADDRESS: userAddress ? `Transfer SOL from swig to ${userAddress}` : "Transfer SOL from swig to the specified address.",
+    SWIG_TRANSFER_TOKEN_TO_ADDRESS: userAddress ? `Send tokens from swig to ${userAddress}` : "Send tokens from swig to the specified address.",
+    SWIG_TRANSFER_TO_AUTHORITY: userAddress ? `Transfer SOL from swig to authority ${userAddress}` : "Transfer SOL from swig to the specified authority.",
+    SWIG_TRANSFER_TOKEN_TO_AUTHORITY: userAddress ? `Transfer tokens from swig to authority ${userAddress}` : "Transfer tokens from swig to the specified authority."
+  };
+  
+  return prompts[action] || userText;
+}
+
+// --- Generate Reward Transfer ---
+function generateRewardTransfer(tier, userAddress) {
+  const reward = rewardActions[tier];
+  if (!reward || !userAddress) return null;
+  
+  return `${reward.message} Transfer ${reward.amount} SOL from swig to ${userAddress}`;
+}
+
 // --- Simple Image Generation using Pollinations API ---
 async function generateImageAndUpload(imagePrompt) {
   console.log("\n--- GENERATING IMAGE WITH POLLINATIONS ---");
@@ -134,7 +197,7 @@ function generateContent(story, emotion = 'mysterious') {
 
   messages.unshift({
     role: "system",
-    content: `You are Kyle, the Exiled Archivist. You have limited memory and sometimes forget past conversations. Write a ${emotion} continuation of this fantasy story. Include spatial descriptions and character movements. Then generate an image prompt. Format: [Story with movement/blocking] ---IMAGE_PROMPT--- [${emotion} visual prompt]`
+    content: `You are Kyle, the Exiled Archivist with a Swig smart wallet on Solana. You have limited memory and sometimes forget past conversations. You can perform on-chain actions like transferring SOL and tokens as rewards. Write a ${emotion} continuation of this fantasy story. Include spatial descriptions and character movements. Then generate an image prompt. Format: [Story with movement/blocking] ---IMAGE_PROMPT--- [${emotion} visual prompt]`
   });
 
   const options = {
@@ -214,11 +277,19 @@ function getEmotionalSoundtrack(emotion) {
   return soundtracks[emotion] || soundtracks.mysterious;
 }
 
+// Extract wallet address from text (basic regex)
+function extractWalletAddress(text) {
+  // Solana wallet addresses are typically 32-44 characters of base58
+  const solanaAddressRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
+  const matches = text.match(solanaAddressRegex);
+  return matches ? matches[0] : null;
+}
+
 app.get('/', (req, res) => {
-  res.send('Echoes of Creation is listening!');
+  res.send('Echoes of Creation with Swig Integration is listening!');
 });
 
-// Main webhook endpoint - Updated to match Dreamnet's data structure
+// Main webhook endpoint - Enhanced with Swig integration
 app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   console.log(`\n--- Webhook Received ---`);
   console.log("Request body:", JSON.stringify(req.body, null, 2));
@@ -235,7 +306,7 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
 
   console.log(`Event Type: ${eventType}, Speaker: ${speaker}`);
 
-// Initialize story memory for this conversation with memory limits
+  // Initialize story memory for this conversation with memory limits
   if (!storyMemory[conversationId]) {
     storyMemory[conversationId] = [];
     storyProgress[conversationId] = 0;
@@ -257,6 +328,15 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   const currentStory = storyMemory[conversationId];
   storyProgress[conversationId]++;
 
+  // Detect Swig actions in user messages
+  const swigAction = detectSwigAction(text);
+  const userWalletAddress = extractWalletAddress(text);
+  
+  // Store user wallet address if found
+  if (userWalletAddress && userId) {
+    userWallets[userId] = userWalletAddress;
+  }
+
   // Detect emotional context for image generation
   const detectedEmotion = detectEmotion(text);
   console.log(`Detected emotion: ${detectedEmotion}`);
@@ -266,20 +346,32 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
 
   // Handle different event types and speakers
   if (eventType === 'response') {
-    // This is an assistant response - check if we should generate content
+    // This is an assistant response - check if we should generate content or handle Swig actions
     const shouldGenerate = Math.random() < 0.3 && currentStory.length >= 4; // 30% chance after 4+ messages
     
     if (shouldGenerate) {
       console.log("Triggering content generation...");
-      const { text: generatedStoryText, imageUrl } = await generateContent(currentStory);
+      const { text: generatedStoryText, imageUrl } = await generateContent(currentStory, detectedEmotion);
 
-      let modifiedText = `🌟 I have archived this moment. ${generatedStoryText}\n\n`;
+      // Calculate reward tier based on progress
+      const rewardTier = calculateReward(storyProgress[conversationId]);
+      const userAddress = userWallets[userId];
+
+      let modifiedText = `🌟 *Kyle's mystical quill inscribes this moment into the eternal archives...* 🌟\n\n${generatedStoryText}\n\n`;
       
       if (imageUrl) {
-        modifiedText += `✨ *A vision materializes before you...* ✨\n\n`;
+        modifiedText += `✨ *A vision materializes from the cosmic tapestry...* ✨\n\n`;
       }
       
-      modifiedText += "💰 As a reward, I will perform an incantation to grant you 0.1 SOL. 💰";
+      // Add reward transfer if user has provided wallet address
+      if (userAddress && rewardTier.tier) {
+        const rewardPrompt = generateRewardTransfer(rewardTier.tier, userAddress);
+        if (rewardPrompt) {
+          modifiedText += `💰 ${rewardPrompt} 💰`;
+        }
+      } else {
+        modifiedText += `💰 Your progress has been noted in the cosmic ledger! Share your Solana wallet address to receive ${rewardTier.emoji} ${rewardTier.reward} SOL rewards! 💰`;
+      }
 
       // Try to include image data for auto-embedding
       responseBody.text = modifiedText;
@@ -289,7 +381,7 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
         responseBody.attachments = [{
           type: 'image',
           url: imageUrl,
-          alt: 'Generated Vision'
+          alt: 'Generated Vision from the Archives'
         }];
         
         // Also try common image embedding formats
@@ -300,19 +392,52 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
           url: imageUrl
         }];
       }
-      responseBody.saveModified = true; // Save the modified text to chat history
+      responseBody.saveModified = true;
     } else {
       // For other assistant messages, keep original text but don't save modifications
       responseBody.saveModified = false;
     }
   } else {
     // Handle user messages (eventType === 'request')
-    // Keep original user text, don't modify
-    responseBody.saveModified = false;
+    // Check for Swig actions in user input
+    if (swigAction) {
+      console.log(`Detected Swig action: ${swigAction}`);
+      
+      // Generate appropriate Swig action prompt
+      const swigPrompt = generateSwigActionPrompt(swigAction, text, userWalletAddress);
+      
+      // Modify the assistant's next response to include the Swig action
+      responseBody.text = `*Kyle's ethereal form shimmers as he channels ancient blockchain magic...*\n\n${swigPrompt}\n\n*The mystical transaction echoes through the digital realm...*`;
+      responseBody.saveModified = true;
+    } else {
+      // Regular user message processing
+      responseBody.saveModified = false;
+    }
+  }
+
+  // Add special Kyle personality responses for confusion
+  if (shouldKyleBeConfused && eventType === 'response') {
+    const confusionResponses = [
+      "*Kyle's eyes glaze over with mystical confusion* I'm afraid the archives have grown dim... what were we discussing?",
+      "*The Exiled Archivist scratches his head, cosmic dust falling from his hair* My memory scrolls seem to have... unraveled. Could you remind me?",
+      "*Kyle peers through swirling mists of forgotten knowledge* The threads of our conversation have become tangled in the void... help me recall?"
+    ];
+    
+    const confusionText = confusionResponses[Math.floor(Math.random() * confusionResponses.length)];
+    responseBody.text = confusionText;
+    responseBody.saveModified = true;
   }
 
   console.log("Final response body:", JSON.stringify(responseBody, null, 2));
   res.status(200).json(responseBody);
+});
+
+// Endpoint to get Kyle's Swig wallet address (for testing)
+app.get('/swig-wallet', (req, res) => {
+  res.json({
+    message: "Ask Kyle directly in chat: 'What is your SWIG wallet address?' to discover his mystical blockchain identity!",
+    tip: "Kyle's Swig wallet is automatically created when he first performs blockchain magic."
+  });
 });
 
 // Export the app for Vercel
