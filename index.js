@@ -79,52 +79,22 @@ function verifySignatureMiddleware(req, res, next) {
   next();
 }
 
-// --- Gemini Image Generation and Vercel Blob Upload ---
+// --- Simple Image Generation using Pollinations API ---
 async function generateImageAndUpload(imagePrompt) {
-  if (!GEMINI_API_KEY || !BLOB_READ_WRITE_TOKEN) {
-    console.error("GEMINI_API_KEY or BLOB_READ_WRITE_TOKEN is not set.");
-    return null;
-  }
-
-  console.log("\n--- GENERATING IMAGE WITH GEMINI ---");
+  console.log("\n--- GENERATING IMAGE WITH POLLINATIONS ---");
   console.log("Image Prompt:", imagePrompt);
 
   try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-preview-image-generation" });
-
-    const result = await model.generateContent({
-      contents: [{
-        role: "user",
-        parts: [{ text: imagePrompt }]
-      }],
-      generationConfig: {
-        responseMimeType: "image/png",
-      },
-      safetySettings: [],
-    });
-
-    const response = result.response;
-    const imageData = response.candidates[0].content.parts[0].inlineData.data;
-
-    console.log("--- IMAGE GENERATION COMPLETE. UPLOADING TO VERCEL BLOB ---");
-
-    // Convert base64 to Buffer
-    const imageBuffer = Buffer.from(imageData, 'base64');
-    const filename = `comic-panel-${Date.now()}.png`;
-
-    const { url } = await put(filename, imageBuffer, {
-      access: 'public',
-      token: BLOB_READ_WRITE_TOKEN,
-      contentType: 'image/png',
-    });
-
-    console.log("--- IMAGE UPLOADED TO VERCEL BLOB ---");
-    console.log("Public URL:", url);
-    return url;
+    // Use Pollinations API for free image generation
+    const encodedPrompt = encodeURIComponent(imagePrompt);
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&seed=${Math.floor(Math.random() * 1000000)}`;
+    
+    console.log("--- IMAGE GENERATION COMPLETE ---");
+    console.log("Public URL:", imageUrl);
+    return imageUrl;
 
   } catch (error) {
-    console.error("Error generating image with Gemini or uploading to Blob:", error);
+    console.error("Error generating image:", error);
     return null;
   }
 }
