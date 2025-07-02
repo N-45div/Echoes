@@ -15,6 +15,22 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const BLOB_READ_WRITE_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
 
+// Story memory system - Kyle's limited memory
+const storyMemory = {};
+const KYLE_MEMORY_LIMIT = 15; // Kyle can only remember last 15 interactions
+const KYLE_CONFUSION_TRIGGERS = [
+  'remember when', 'you said before', 'earlier you mentioned', 
+  'like last time', 'from before', 'you told me'
+];
+
+// Emotion detection mapping
+const emotionMap = {
+  mysterious: ['whisper', 'shadow', 'secret', 'hidden', 'unknown', 'dark'],
+  excited: ['amazing', 'incredible', 'wow', 'fantastic', 'awesome', 'brilliant'],
+  melancholy: ['sad', 'lonely', 'lost', 'melancholy', 'sorrow', 'tears'],
+  chaotic: ['chaos', 'wild', 'crazy', 'insane', 'mad', 'frantic', 'explosion']
+};
+
 app.use(cors()); // Enable CORS for all origins
 
 // Modified body parser to properly handle raw body for signature verification
