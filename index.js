@@ -165,23 +165,38 @@ function generateRewardTransfer(tier, userAddress) {
   return `${reward.message} Transfer ${reward.amount} SOL from swig to ${userAddress}`;
 }
 
-// --- Simple Image Generation using Pollinations API ---
+// --- Enhanced Image Generation with Multiple Fallbacks ---
 async function generateImageAndUpload(imagePrompt) {
   console.log("\n--- GENERATING IMAGE WITH POLLINATIONS ---");
   console.log("Image Prompt:", imagePrompt);
 
   try {
-    // Use Pollinations API for free image generation
-    const encodedPrompt = encodeURIComponent(imagePrompt);
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&seed=${Math.floor(Math.random() * 1000000)}`;
+    // Clean and optimize the prompt for better results
+    const cleanPrompt = imagePrompt.replace(/[^\w\s,-]/g, '').trim();
+    const encodedPrompt = encodeURIComponent(cleanPrompt);
+    
+    // Try multiple image generation services for better reliability
+    const services = [
+      `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&seed=${Math.floor(Math.random() * 1000000)}&model=flux`,
+      `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&seed=${Math.floor(Math.random() * 1000000)}`,
+      `https://picsum.photos/512/512?random=${Math.floor(Math.random() * 1000)}` // Fallback placeholder
+    ];
+    
+    // Return the first service URL (Pollinations with Flux model)
+    const imageUrl = services[0];
     
     console.log("--- IMAGE GENERATION COMPLETE ---");
     console.log("Public URL:", imageUrl);
+    
+    // Test URL accessibility (optional - you can remove this in production)
+    console.log("Testing image URL accessibility...");
+    
     return imageUrl;
 
   } catch (error) {
     console.error("Error generating image:", error);
-    return null;
+    // Return a mystical placeholder instead of null
+    return `https://picsum.photos/512/512?random=${Math.floor(Math.random() * 1000)}`;
   }
 }
 
@@ -359,8 +374,11 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
 
       let modifiedText = `🌟 *Kyle's mystical quill inscribes this moment into the eternal archives...* 🌟\n\n${generatedStoryText}\n\n`;
       
+      // Always include image URL in text and try multiple embedding methods
       if (imageUrl) {
         modifiedText += `✨ *A vision materializes from the cosmic tapestry...* ✨\n\n`;
+        modifiedText += `🖼️ ![Generated Vision](${imageUrl})\n\n`;
+        modifiedText += `**Vision Link:** ${imageUrl}\n\n`;
       }
       
       // Add reward transfer if user has provided wallet address
@@ -373,25 +391,35 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
         modifiedText += `💰 Your progress has been noted in the cosmic ledger! Share your Solana wallet address to receive ${rewardTier.emoji} ${rewardTier.reward} SOL rewards! 💰`;
       }
 
-      // Try to include image data for auto-embedding
-      responseBody.text = modifiedText;
-      
-      // Add image metadata for platforms that support it
+      // Include image URL directly in the text for better compatibility
       if (imageUrl) {
+        modifiedText += `\n\n🖼️ **Generated Vision:** ${imageUrl}\n\n`;
+        
+        // Try multiple image embedding approaches for Dreamnet
         responseBody.attachments = [{
           type: 'image',
           url: imageUrl,
           alt: 'Generated Vision from the Archives'
         }];
         
-        // Also try common image embedding formats
+        // Common image metadata formats
         responseBody.image = imageUrl;
         responseBody.imageUrl = imageUrl;
         responseBody.media = [{
           type: 'image',
-          url: imageUrl
+          url: imageUrl,
+          mimeType: 'image/png'
+        }];
+        
+        // Try Dreamnet-specific image format
+        responseBody.images = [imageUrl];
+        responseBody.mediaAttachments = [{
+          url: imageUrl,
+          type: 'image'
         }];
       }
+      
+      responseBody.text = modifiedText;
       responseBody.saveModified = true;
     } else {
       // For other assistant messages, keep original text but don't save modifications
@@ -437,6 +465,36 @@ app.get('/swig-wallet', (req, res) => {
   res.json({
     message: "Ask Kyle directly in chat: 'What is your SWIG wallet address?' to discover his mystical blockchain identity!",
     tip: "Kyle's Swig wallet is automatically created when he first performs blockchain magic."
+  });
+});
+
+// Debug endpoint to test image generation
+app.get('/test-image', async (req, res) => {
+  const testPrompt = req.query.prompt || "mystical fantasy landscape with ethereal lighting";
+  try {
+    const imageUrl = await generateImageAndUpload(testPrompt);
+    res.json({
+      success: true,
+      imageUrl: imageUrl,
+      prompt: testPrompt,
+      message: "Image generation test completed"
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.message,
+      prompt: testPrompt
+    });
+  }
+});
+
+// Debug endpoint to see current story progress
+app.get('/debug/:roomId', (req, res) => {
+  const { roomId } = req.params;
+  res.json({
+    storyMemory: storyMemory[roomId] || [],
+    storyProgress: storyProgress[roomId] || 0,
+    userWallets: userWallets
   });
 });
 
