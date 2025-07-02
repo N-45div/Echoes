@@ -24,7 +24,14 @@ app.use(bodyParser.json({
   }
 }));
 
-const storyMemory = {};
+// Story progress tracking for dynamic rewards
+const storyProgress = {};
+const rewardTiers = {
+  bronze: { threshold: 5, reward: 0.1, emoji: "🥉" },
+  silver: { threshold: 15, reward: 0.25, emoji: "🥈" },
+  gold: { threshold: 30, reward: 0.5, emoji: "🥇" },
+  legendary: { threshold: 50, reward: 1.0, emoji: "👑" }
+};
 
 // --- Fixed Signature Verification Function ---
 function verifySignature(rawBody, signature, secret) {
@@ -99,8 +106,8 @@ async function generateImageAndUpload(imagePrompt) {
   }
 }
 
-// --- OpenRouter Content Generation ---
-function generateContent(story) {
+// --- OpenRouter Content Generation with Emotional Context ---
+function generateContent(story, emotion = 'mysterious') {
   if (!OPENROUTER_API_KEY) {
     console.error("OPENROUTER_API_KEY is not set.");
     return Promise.resolve({ text: "(Error: OpenRouter API key missing)", imageUrl: null });
@@ -111,7 +118,7 @@ function generateContent(story) {
 
   messages.unshift({
     role: "system",
-    content: "You are Kyle, the Exiled Archivist. Collaboratively write a fantasy story. Provide a short, dreamlike continuation of the narrative. Then, generate a concise, descriptive prompt for an image that captures the essence of your text. Format: [Your Story Continuation] ---IMAGE_PROMPT--- [Image Prompt]"
+    content: `You are Kyle, the Exiled Archivist. You have limited memory and sometimes forget past conversations. Write a ${emotion} continuation of this fantasy story. Include spatial descriptions and character movements. Then generate an image prompt. Format: [Story with movement/blocking] ---IMAGE_PROMPT--- [${emotion} visual prompt]`
   });
 
   const options = {
@@ -123,7 +130,8 @@ function generateContent(story) {
     },
     body: JSON.stringify({
       "model": "mistralai/mistral-7b-instruct:free",
-      "messages": messages
+      "messages": messages,
+      "temperature": emotion === 'chaotic' ? 0.9 : 0.7
     })
   };
 
@@ -143,7 +151,7 @@ function generateContent(story) {
         const fullResponse = data.choices[0].message.content;
         const parts = fullResponse.split("---IMAGE_PROMPT---");
         const storyContinuation = parts[0].trim();
-        const imagePrompt = parts[1] ? parts[1].trim() : storyContinuation;
+        const imagePrompt = parts[1] ? `${parts[1].trim()}, ${emotion} mood, cinematic lighting` : `${storyContinuation}, ${emotion} atmosphere`;
 
         console.log("--- OPENROUTER GENERATION COMPLETE ---");
 
@@ -156,6 +164,38 @@ function generateContent(story) {
       }
     });
   });
+}
+
+// Detect emotional context
+function detectEmotion(text) {
+  const lowercaseText = text.toLowerCase();
+  for (const [emotion, keywords] of Object.entries(emotionMap)) {
+    if (keywords.some(keyword => lowercaseText.includes(keyword))) {
+      return emotion;
+    }
+  }
+  return 'mysterious'; // default
+}
+
+// Calculate dynamic rewards
+function calculateReward(progress) {
+  for (const [tier, info] of Object.entries(rewardTiers).reverse()) {
+    if (progress >= info.threshold) {
+      return { ...info, tier };
+    }
+  }
+  return { ...rewardTiers.bronze, tier: 'bronze' };
+}
+
+// Generate emotional soundtrack descriptions
+function getEmotionalSoundtrack(emotion) {
+  const soundtracks = {
+    mysterious: 'ethereal whispers and distant chimes',
+    excited: 'triumphant orchestral swells',
+    melancholy: 'haunting violin melodies',
+    chaotic: 'discordant drums and wild harmonies'
+  };
+  return soundtracks[emotion] || soundtracks.mysterious;
 }
 
 app.get('/', (req, res) => {
@@ -179,14 +219,31 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
 
   console.log(`Event Type: ${eventType}, Speaker: ${speaker}`);
 
-  // Initialize story memory for this conversation
+// Initialize story memory for this conversation with memory limits
   if (!storyMemory[conversationId]) {
     storyMemory[conversationId] = [];
+    storyProgress[conversationId] = 0;
   }
+
+  // Kyle's memory limitation - he forgets older interactions
+  if (storyMemory[conversationId].length >= KYLE_MEMORY_LIMIT) {
+    storyMemory[conversationId] = storyMemory[conversationId].slice(-KYLE_MEMORY_LIMIT);
+    console.log("Kyle's memory is full - forgetting older interactions");
+  }
+
+  // Check if user mentions something Kyle should have forgotten
+  const shouldKyleBeConfused = KYLE_CONFUSION_TRIGGERS.some(trigger => 
+    text.toLowerCase().includes(trigger)
+  ) && storyMemory[conversationId].length > 10;
 
   // Add current message to story memory
   storyMemory[conversationId].push({ speaker, text, timestamp: new Date().toISOString() });
   const currentStory = storyMemory[conversationId];
+  storyProgress[conversationId]++;
+
+  // Detect emotional context for image generation
+  const detectedEmotion = detectEmotion(text);
+  console.log(`Detected emotion: ${detectedEmotion}`);
 
   // Prepare response body (copy all original data)
   let responseBody = { ...req.body };
@@ -203,15 +260,30 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
       let modifiedText = `🌟 I have archived this moment. ${generatedStoryText}\n\n`;
       
       if (imageUrl) {
-        // Multiple formats to ensure compatibility across different platforms
         modifiedText += `✨ *A vision materializes before you...* ✨\n\n`;
-        modifiedText += `![Vision](${imageUrl})\n\n`;
-        modifiedText += `🔮 Vision Link: ${imageUrl}\n\n`;
       }
       
       modifiedText += "💰 As a reward, I will perform an incantation to grant you 0.1 SOL. 💰";
 
+      // Try to include image data for auto-embedding
       responseBody.text = modifiedText;
+      
+      // Add image metadata for platforms that support it
+      if (imageUrl) {
+        responseBody.attachments = [{
+          type: 'image',
+          url: imageUrl,
+          alt: 'Generated Vision'
+        }];
+        
+        // Also try common image embedding formats
+        responseBody.image = imageUrl;
+        responseBody.imageUrl = imageUrl;
+        responseBody.media = [{
+          type: 'image',
+          url: imageUrl
+        }];
+      }
       responseBody.saveModified = true; // Save the modified text to chat history
     } else {
       // For other assistant messages, keep original text but don't save modifications
