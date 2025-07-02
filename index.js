@@ -194,15 +194,22 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   // Handle different event types and speakers
   if (eventType === 'response') {
     // This is an assistant response - check if we should generate content
-    if (currentStory.length > 0 && currentStory.length % 4 === 0) {
+    const shouldGenerate = Math.random() < 0.3 && currentStory.length >= 4; // 30% chance after 4+ messages
+    
+    if (shouldGenerate) {
       console.log("Triggering content generation...");
       const { text: generatedStoryText, imageUrl } = await generateContent(currentStory);
 
-      let modifiedText = `I have archived this moment. ${generatedStoryText} `;
+      let modifiedText = `🌟 I have archived this moment. ${generatedStoryText}\n\n`;
+      
       if (imageUrl) {
-        modifiedText += `A vision has appeared: ${imageUrl}`;
+        // Multiple formats to ensure compatibility across different platforms
+        modifiedText += `✨ *A vision materializes before you...* ✨\n\n`;
+        modifiedText += `![Vision](${imageUrl})\n\n`;
+        modifiedText += `🔮 Vision Link: ${imageUrl}\n\n`;
       }
-      modifiedText += " As a reward, I will perform an incantation to grant you 0.1 SOL.";
+      
+      modifiedText += "💰 As a reward, I will perform an incantation to grant you 0.1 SOL. 💰";
 
       responseBody.text = modifiedText;
       responseBody.saveModified = true; // Save the modified text to chat history
