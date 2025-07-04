@@ -1,17 +1,259 @@
 const express = require('express');
 const crypto = require('crypto');
-const { GoogleGenerativeAI, Modality } = require('@google/generative-ai');
 const { put } = require('@vercel/blob');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const request = require('request');
+const { createUmi } = require('@metaplex-foundation/umi-bundle-defaults');
+const { createGenericFile, generateSigner, signerIdentity, sol } = require('@metaplex-foundation/umi');
+const { mplTokenMetadata } = require('@metaplex-foundation/mpl-token-metadata');
+const { irysUploader } = require('@metaplex-foundation/umi-uploader-irys');
+const fetch = require('node-fetch');
 const app = express();
+
+const SELF_PING_INTERVAL = 14 * 60 * 1000; // 14 minutes (before 15min timeout)
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
+let keepAliveTimer = null;
+
+app.get('/health', (req, res) => {
+  const stats = keepAliveSystem ? keepAliveSystem.getStats() : null;
+
+  res.status(200).json({
+    status: 'alive',
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    uptime: process.uptime(),
+    keepAlive: {
+      active: keepAliveSystem ? keepAliveSystem.isRunning : false,
+      stats: stats
+    }
+  });
+});
+
+app.get('/keepalive-stats', (req, res) => {
+  if (!keepAliveSystem) {
+    return res.status(200).json({
+      status: 'Keep-alive system not initialized',
+      reason: process.env.NODE_ENV !== 'production' ? 'Development mode' : 'No webhook URL'
+    });
+  }
+
+  res.status(200).json({
+    system: 'active',
+    ...keepAliveSystem.getStats()
+  });
+});
+
+app.get('/warmup', async (req, res) => {
+  console.log('Warming up webhook...');
+
+  // Pre-load any heavy operations
+  const startTime = Date.now();
+
+  // Simulate typical webhook operations without side effects
+  try {
+    // Test API connections
+    const testPromises = [];
+
+    if (OPENROUTER_API_KEY) {
+      testPromises.push(new Promise((resolve) => {
+        setTimeout(() => resolve('openrouter'), 100);
+      }));
+    }
+
+    if (GEMINI_API_KEY) {
+      testPromises.push(new Promise((resolve) => {
+        setTimeout(() => resolve('gemini'), 100);
+      }));
+    }
+
+    await Promise.all(testPromises);
+
+    const warmupTime = Date.now() - startTime;
+    console.log(`Webhook warmed up in ${warmupTime}ms`);
+
+    res.status(200).json({
+      status: 'warmed',
+      warmupTime,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Warmup failed', message: error.message });
+  }
+});
+
+// KEEP-ALIVE STRATEGY 5: Advanced UptimeRobot-style keep-alive
+const https = require('https');
+const http = require('http');
+
+class WebhookKeepAlive {
+  constructor(webhookUrl, options = {}) {
+    this.webhookUrl = webhookUrl;
+    this.interval = options.interval || 14 * 60 * 1000; // 14 minutes
+    this.timeout = options.timeout || 10000; // 10 seconds
+    this.retries = options.retries || 3;
+    this.timer = null;
+    this.isRunning = false;
+    this.stats = {
+      totalPings: 0,
+      successfulPings: 0,
+      failedPings: 0,
+      lastPing: null,
+      lastSuccess: null,
+      lastError: null
+    };
+  }
+
+  async ping() {
+    const startTime = Date.now();
+
+    return new Promise((resolve, reject) => {
+      const url = new URL(this.webhookUrl + '/health');
+      const module = url.protocol === 'https:' ? https : http;
+
+      const req = module.request(url, {
+        method: 'GET',
+        timeout: this.timeout,
+        headers: {
+          'User-Agent': 'WebhookKeepAlive/1.0'
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          const responseTime = Date.now() - startTime;
+
+          if (res.statusCode === 200) {
+            this.stats.successfulPings++;
+            this.stats.lastSuccess = new Date();
+            console.log(`✅ Webhook ping successful (${responseTime}ms)`);
+            resolve({ success: true, responseTime, statusCode: res.statusCode });
+          } else {
+            this.stats.failedPings++;
+            this.stats.lastError = new Date();
+            console.log(`❌ Webhook ping failed with status ${res.statusCode}`);
+            reject(new Error(`HTTP ${res.statusCode}`));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        this.stats.failedPings++;
+        this.stats.lastError = new Date();
+        console.error(`❌ Webhook ping error:`, error.message);
+        reject(error);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        this.stats.failedPings++;
+        this.stats.lastError = new Date();
+        console.error(`❌ Webhook ping timeout after ${this.timeout}ms`);
+        reject(new Error('Timeout'));
+      });
+
+      req.end();
+    });
+  }
+
+  async pingWithRetry() {
+    this.stats.totalPings++;
+    this.stats.lastPing = new Date();
+
+    for (let attempt = 1; attempt <= this.retries; attempt++) {
+      try {
+        const result = await this.ping();
+        return result;
+      } catch (error) {
+        console.log(`Ping attempt ${attempt}/${this.retries} failed:`, error.message);
+
+        if (attempt === this.retries) {
+          throw error;
+        }
+
+        // Wait before retry (exponential backoff)
+        const delay = Math.pow(2, attempt) * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  start() {
+    if (this.isRunning) {
+      console.log('⚠️  Keep-alive is already running');
+      return;
+    }
+
+    console.log(`🚀 Starting webhook keep-alive for ${this.webhookUrl}`);
+    console.log(`📊 Ping interval: ${this.interval / 1000} seconds`);
+
+    this.isRunning = true;
+
+    // Initial ping
+    this.pingWithRetry().catch(error => {
+      console.error('Initial ping failed:', error.message);
+    });
+
+    // Set up interval
+    this.timer = setInterval(async () => {
+      if (!this.isRunning) return;
+
+      try {
+        await this.pingWithRetry();
+      } catch (error) {
+        console.error('Keep-alive ping failed after all retries:', error.message);
+      }
+    }, this.interval);
+
+    // Cleanup on process exit
+    process.on('SIGTERM', () => this.stop());
+    process.on('SIGINT', () => this.stop());
+  }
+
+  stop() {
+    if (!this.isRunning) return;
+
+    console.log('🛑 Stopping webhook keep-alive');
+    this.isRunning = false;
+
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  getStats() {
+    return {
+      ...this.stats,
+      uptime: this.isRunning ? Date.now() - this.stats.lastPing : 0,
+      successRate: this.stats.totalPings > 0 ?
+        (this.stats.successfulPings / this.stats.totalPings * 100).toFixed(2) + '%' : 'N/A'
+    };
+  }
+}
+
+// Initialize keep-alive system
+let keepAliveSystem = null;
+
+function startSelfPing() {
+  if (process.env.NODE_ENV === 'production' && WEBHOOK_URL) {
+    console.log('Starting advanced keep-alive system...');
+
+    keepAliveSystem = new WebhookKeepAlive(WEBHOOK_URL, {
+      interval: SELF_PING_INTERVAL,
+      timeout: 10000,
+      retries: 3
+    });
+
+    keepAliveSystem.start();
+  }
+}
+
 
 // Enhanced for Hackathon: Scene Comics + Story Rewards + Visualized Emotions + SWIG WALLET ACTIONS
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const BLOB_READ_WRITE_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+
 
 // HACKATHON FEATURE: Character User Memory - Kyle's limited memory system
 const storyMemory = {};
@@ -57,8 +299,7 @@ const emotionMap = {
 
 // HACKATHON FEATURE: Story Based Rewards - Dynamic reward system with SWIG integration
 const storyProgress = {};
-const userWallets = {};
-const pendingRewards = {}; // Track pending Swig transfers
+
 const rewardTiers = {
   bronze: { threshold: 3, reward: 0.05, emoji: "🥉", title: "Chronicle Keeper" },
   silver: { threshold: 7, reward: 0.1, emoji: "🥈", title: "Tale Weaver" },
@@ -100,19 +341,7 @@ const mementoTypes = {
   legendary_tome: { rarity: 'legendary', value: 0.2 }
 };
 
-// SWIG WALLET INTEGRATION: Action triggers and handlers
-const swigActionTriggers = {
-  CREATE_SWIG: ['create swig', 'make swig', 'new swig', 'setup swig', 'initialize swig', 'start swig', 'build swig'],
-  GET_SWIG_BALANCE: ['swig balance', 'check swig', 'balance of swig', 'how much in swig', 'swig wallet balance'],
-  GET_SWIG_TOKEN_BALANCE: ['swig token balance', 'swig spl balance', 'token balance in swig', 'spl balance in swig'],
-  GET_SWIG_AUTHORITIES: ['swig authorities', 'authorities on swig', 'swig signers', 'signers on swig', 'who can sign'],
-  ADD_SWIG_AUTHORITY: ['add authority', 'add signer', 'grant access', 'add to swig'],
-  TRANSFER_TO_SWIG: ['transfer to swig', 'send to swig', 'fund swig', 'deposit to swig', 'transfer funds to swig'],
-  TRANSFER_TOKEN_TO_SWIG: ['transfer token to swig', 'send token to swig', 'transfer spl to swig', 'send spl to swig'],
-  SWIG_TRANSFER_TO_ADDRESS: ['transfer from swig', 'send from swig', 'transfer using swig', 'send using swig', 'swig transfer to', 'swig send to'],
-  SWIG_TRANSFER_TOKEN_TO_ADDRESS: ['transfer token from swig', 'send token from swig', 'transfer spl from swig', 'send spl from swig'],
-  SWIG_TRANSFER_TO_AUTHORITY: ['transfer from swig to authority', 'send from swig to authority', 'transfer to swig authority', 'send to swig authority']
-};
+
 
 app.use(cors());
 app.use(bodyParser.json({
@@ -157,89 +386,21 @@ function verifySignatureMiddleware(req, res, next) {
   next();
 }
 
-// SWIG WALLET INTEGRATION: Detect Swig actions in user messages
-function detectSwigAction(text) {
-  const lowercaseText = text.toLowerCase();
-  
-  for (const [action, triggers] of Object.entries(swigActionTriggers)) {
-    for (const trigger of triggers) {
-      if (lowercaseText.includes(trigger)) {
-        return {
-          action,
-          trigger,
-          originalText: text
-        };
-      }
-    }
-  }
-  
-  return null;
-}
-
-// SWIG WALLET INTEGRATION: Generate natural language prompts for Swig actions
-function generateSwigPrompt(action, context = {}) {
-  const { userAddress, amount, emotion, rewardTier } = context;
-  
-  const prompts = {
-    CREATE_SWIG: [
-      `*Kyle's mystical energies swirl ${emotion?.color || 'mysteriously'}* "Let me forge a new Swig wallet from the cosmic archives... Create swig wallet to hold our story treasures."`,
-      `*The Exiled Archivist channels ancient power* "The time has come to manifest a Swig repository for our tales. Make swig wallet now."`
-    ],
-    
-    GET_SWIG_BALANCE: [
-      `*Kyle peers into the ${emotion?.dominant || 'mysterious'} depths of his wallet* "Let me check the balance of my swig wallet to see what treasures remain..."`,
-      `*The Archivist's eyes glow with ${emotion?.color || 'mystical'} light* "What is the balance of swig? The cosmic ledger shall reveal all."`
-    ],
-    
-    SWIG_TRANSFER_TO_ADDRESS: [
-      `*Kyle's ${emotion?.dominant || 'mysterious'} aura pulses with generosity* "For achieving ${rewardTier?.title || 'greatness'}, I shall transfer ${amount || '0.1'} SOL from swig to your realm at ${userAddress}. May these rewards fuel your journey!"`,
-      `*The Exiled Archivist gestures with ${emotion?.color || 'mystical'} energy* "The archives recognize your dedication! Use swig to send ${amount || '0.1'} SOL to ${userAddress} as your earned treasure."`,
-      `*Kyle's form shimmers with ${emotion?.dominant || 'mysterious'} pride* "Your story prowess deserves recognition! Transfer ${amount || '0.1'} SOL from swig to ${userAddress} as a token of the archive's appreciation."`
-    ],
-    
-    TRANSFER_TO_SWIG: [
-      `*Kyle channels energy into his mystical wallet* "Let me fund swig with ${amount || '0.1'} SOL to prepare for future rewards..."`,
-      `*The Archivist's ${emotion?.dominant || 'mysterious'} powers activate* "Transfer ${amount || '0.1'} SOL to swig wallet to fuel our story adventures!"`
-    ],
-    
-    GET_SWIG_AUTHORITIES: [
-      `*Kyle examines the ${emotion?.dominant || 'mystical'} signatures of power* "Show me the swig authorities who can command these archives..."`,
-      `*The Exiled Archivist's wisdom unfolds* "List swig signers to reveal who shares dominion over our story treasures."`
-    ]
-  };
-  
-  const actionPrompts = prompts[action] || [`*Kyle attempts to ${action.toLowerCase().replace(/_/g, ' ')}*`];
-  return actionPrompts[Math.floor(Math.random() * actionPrompts.length)];
-}
-
-// SWIG WALLET INTEGRATION: Enhanced reward system with actual transfers
-function generateRewardTransferPrompt(userAddress, rewardInfo, emotion) {
-  if (!userAddress) {
-    return `*Kyle's ${emotion?.dominant || 'mysterious'} form flickers* "I wish to reward your story mastery with ${rewardInfo.reward} SOL, but I need to know your wallet address first. Share your address so I can transfer your earned treasures!"`;
-  }
-  
-  return generateSwigPrompt('SWIG_TRANSFER_TO_ADDRESS', {
-    userAddress,
-    amount: rewardInfo.reward,
-    emotion,
-    rewardTier: rewardInfo
-  });
-}
 
 // HACKATHON FEATURE: Scene Comics - Enhanced visual story generation
 async function generateSceneComic(story, emotion, sceneType) {
   console.log(`\n--- GENERATING SCENE COMIC (${sceneType.toUpperCase()}) ---`);
-  
+
   try {
     // Generate story continuation with visual emphasis
-    const storyMessages = story.map(msg => ({ 
-      role: msg.speaker === 'user' ? 'user' : 'assistant', 
-      content: msg.text 
+    const storyMessages = story.map(msg => ({
+      role: msg.speaker === 'user' ? 'user' : 'assistant',
+      content: msg.text
     }));
-    
+
     storyMessages.unshift({
       role: "system",
-      content: `You are Kyle, the Exiled Archivist. Create a vivid, visual story scene that would work perfectly as a comic panel. Focus on ${sceneType} elements. Make it cinematic and ${emotion}. Include specific visual details, character expressions, and atmospheric elements.`
+      content: `You are an AI agent. Create a vivid, visual story scene that would work perfectly as a comic panel. Focus on ${sceneType} elements. Make it cinematic and ${emotion}. Include specific visual details, character expressions, and atmospheric elements.`
     });
 
     const storyOptions = {
@@ -269,21 +430,29 @@ async function generateSceneComic(story, emotion, sceneType) {
 
     // Generate enhanced comic-style image prompt
     const visualStyle = emotionMap[emotion]?.visualStyle || 'mysterious';
-    const comicPrompt = `Kyle the Exiled Archivist, ${sceneType} scene, ${visualStyle} style, comic book art, detailed character expressions, dramatic lighting, fantasy setting, high quality digital art`;
-    
+    const comicPrompt = `A scene with ${sceneType} elements, ${visualStyle} style, comic book art, detailed character expressions, dramatic lighting, fantasy setting, high quality digital art`;
+
     const seed = Math.floor(Math.random() * 1000000);
     const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(comicPrompt)}?width=512&height=512&seed=${seed}&model=flux`;
 
     // Create enhanced comic panel format
     const comicPanel = `
-🎨 Scene Comic Panel
+## 🎨 Scene Comic Panel
+
+**${sceneType.toUpperCase()} SCENE**
 
 ${storyResponse}
 
+---
+
+**Visual Style**: ${visualStyle}  
+**Emotion**: ${emotion}  
+**Soundtrack**: ${emotionMap[emotion]?.soundtrack || 'ambient mystical tones'}  
+
 `;
 
-    return { 
-      text: comicPanel, 
+    return {
+      text: comicPanel,
       imageUrl: imageUrl,
       sceneType: sceneType,
       emotion: emotion,
@@ -292,9 +461,9 @@ ${storyResponse}
 
   } catch (error) {
     console.error("Error generating scene comic:", error);
-    return { 
-      text: "*(The comic panel flickers and fades... Kyle's mystical energies need a moment to recharge)*", 
-      imageUrl: null 
+    return {
+      text: "*(The comic panel flickers and fades... Kyle's mystical energies need a moment to recharge)*",
+      imageUrl: null
     };
   }
 }
@@ -354,8 +523,8 @@ function detectSceneType(text) {
 
   // Return the scene type with highest score, or 'dialogue' as default
   let dominantScene = 'dialogue';
-  let maxBLANK
-maxScore = 0;
+
+  maxScore = 0;
   for (const [sceneType, score] of Object.entries(sceneScores)) {
     if (score > maxScore) {
       maxScore = score;
@@ -370,9 +539,9 @@ maxScore = 0;
 function calculateAdvancedReward(conversationId, userId) {
   const progress = storyProgress[conversationId]?.count || 0;
   const currentTier = Object.entries(rewardTiers).reverse().find(([_, tier]) => progress >= tier.threshold);
-  
+
   if (!currentTier) return null;
-  
+
   const [tierName, tierInfo] = currentTier;
   return {
     tier: tierName,
@@ -393,7 +562,7 @@ function generateMemento(conversationId, storyContent, emotion) {
   const mementoId = `memento_${conversationId}_${Date.now()}`;
   const mementoTypeKeys = Object.keys(mementoTypes);
   const randomType = mementoTypeKeys[Math.floor(Math.random() * mementoTypeKeys.length)];
-  
+
   const memento = {
     id: mementoId,
     type: randomType,
@@ -407,23 +576,19 @@ function generateMemento(conversationId, storyContent, emotion) {
   return memento;
 }
 
-// SWIG WALLET INTEGRATION: Extract wallet address from user input
-function extractWalletAddress(text) {
-  // Look for Solana wallet address patterns (base58, 32-44 characters)
-  const walletRegex = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
-  const matches = text.match(walletRegex);
-  
-  if (matches) {
-    // Return the first match that looks like a Solana address
-    return matches.find(match => match.length >= 32 && match.length <= 44);
-  }
-  
-  return null;
+// HACKATHON FEATURE: Audio Generation - Generate audio URL from Pollinations.ai
+function generateAudioUrl(emotion, text) {
+  // Ensure the text is properly encoded for the URL
+  return `${process.env.WEBHOOK_URL}/audio-proxy?text=${encodeURIComponent(text)}`;
 }
+
+
 
 // Main webhook endpoint - Enhanced for hackathon features + SWIG integration
 app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
-  console.log(`\n--- HACKATHON WEBHOOK RECEIVED (WITH SWIG INTEGRATION) ---\n`);
+  console.log(`
+--- HACKATHON WEBHOOK RECEIVED ---
+`);
   console.log("Request body:", JSON.stringify(req.body, null, 2));
 
   const { roomId, text, eventType, agentId, userId, originalUserMessage } = req.body;
@@ -433,53 +598,35 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   }
 
   const conversationId = roomId;
-  
+
   // Initialize enhanced story tracking
   if (!storyMemory[conversationId]) {
     storyMemory[conversationId] = [];
-    storyProgress[conversationId] = { 
-      count: 0, 
+    storyProgress[conversationId] = {
+      count: 0,
       lastRewardTierAnnounced: null,
       lastSceneGenerated: 0,
       goals: Object.keys(conversationGoals),
       mementos: [],
-      userWalletAddress: null,
-      pendingRewards: []
+
     };
     storyMemory[conversationId].lastImageTurn = 0;
   }
 
   // Handle different event types
   if (eventType === 'request') {
-    // Store user message and check for wallet address or Swig actions
     const userMessage = text || originalUserMessage;
-    
-    // Extract wallet address if provided
-    const walletAddress = extractWalletAddress(userMessage);
-    if (walletAddress) {
-      storyProgress[conversationId].userWalletAddress = walletAddress;
-      console.log(`Wallet address registered for ${conversationId}: ${walletAddress}`);
-    }
-    
-    // Check for Swig action triggers
-    const swigAction = detectSwigAction(userMessage);
-    if (swigAction) {
-      console.log(`Swig action detected: ${swigAction.action}`);
-      storyProgress[conversationId].lastSwigAction = swigAction;
-    }
-    
+
     if (storyMemory[conversationId].length >= KYLE_MEMORY_LIMIT) {
       storyMemory[conversationId] = storyMemory[conversationId].slice(-KYLE_MEMORY_LIMIT);
     }
-    
-    storyMemory[conversationId].push({ 
-      speaker: 'user', 
-      text: userMessage, 
-      timestamp: new Date().toISOString(),
-      walletAddress: walletAddress,
-      swigAction: swigAction
+
+    storyMemory[conversationId].push({
+      speaker: 'user',
+      text: userMessage,
+      timestamp: new Date().toISOString()
     });
-    
+
     return res.status(200).json({
       ...req.body,
       saveModified: false
@@ -487,9 +634,9 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   }
 
   if (eventType === 'response') {
-    // Process DreamNet's response and enhance with hackathon features + SWIG
-    console.log("Processing DreamNet response - applying hackathon enhancements + SWIG integration");
-    
+    // Process DreamNet's response and enhance with hackathon features
+    console.log("Processing DreamNet response - applying hackathon enhancements");
+
     // Memory management
     if (storyMemory[conversationId].length >= KYLE_MEMORY_LIMIT) {
       storyMemory[conversationId] = storyMemory[conversationId].slice(-KYLE_MEMORY_LIMIT);
@@ -497,17 +644,17 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
 
     // Add messages to memory
     if (originalUserMessage) {
-      storyMemory[conversationId].push({ 
-        speaker: 'user', 
-        text: originalUserMessage, 
-        timestamp: new Date().toISOString() 
+      storyMemory[conversationId].push({
+        speaker: 'user',
+        text: originalUserMessage,
+        timestamp: new Date().toISOString()
       });
     }
 
-    storyMemory[conversationId].push({ 
-      speaker: 'assistant', 
-      text: text, 
-      timestamp: new Date().toISOString() 
+    storyMemory[conversationId].push({
+      speaker: 'assistant',
+      text: text,
+      timestamp: new Date().toISOString()
     });
 
     const currentStory = storyMemory[conversationId];
@@ -524,96 +671,77 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
     let responseBody = { ...req.body };
     let finalResponseText = text;
     let finalImageUrl = req.body.imageUrl;
+    let finalAudioUrl = null;
 
-    // SWIG WALLET INTEGRATION: Handle Swig actions
-    const lastUserMessage = currentStory[currentStory.length - 2];
-    const userSwigAction = lastUserMessage?.swigAction;
-    
-    if (userSwigAction) {
-      console.log(`Processing Swig action: ${userSwigAction.action}`);
-      
-      const swigPrompt = generateSwigPrompt(userSwigAction.action, {
-        userAddress: storyProgress[conversationId].userWalletAddress,
-        emotion: emotionAnalysis
-      });
-      
-      finalResponseText = swigPrompt;
-      
-      // Log the Swig action for debugging
-      console.log(`Generated Swig prompt: ${swigPrompt}`);
-    }
+    // HACKATHON FEATURE: Audio Generation
+    finalAudioUrl = generateAudioUrl(emotionAnalysis.dominant, text);
+
+
 
     // HACKATHON FEATURE: Scene Comics - Trigger visual generation
     const SCENE_COMIC_TRIGGERS = ['action', 'emotion', 'setting'];
     const MIN_TURNS_FOR_SCENE_COMIC = 3;
     const MIN_TURNS_BETWEEN_COMICS = 2;
 
-    if (storyProgress[conversationId].count >= MIN_TURNS_FOR_SCENE_COMIC && !userSwigAction) {
+    if (storyProgress[conversationId].count >= MIN_TURNS_FOR_SCENE_COMIC) {
       const turnsSinceLastScene = storyProgress[conversationId].count - storyProgress[conversationId].lastSceneGenerated;
-      
-      const shouldGenerateSceneComic = 
+
+      console.log(`Image Generation Check: Turns since last scene: ${turnsSinceLastScene}, Current count: ${storyProgress[conversationId].count}`);
+      console.log(`Scene Type: ${sceneType}, Emotion Intensity: ${emotionAnalysis.intensity}`);
+
+      const shouldGenerateSceneComic =
         (SCENE_COMIC_TRIGGERS.includes(sceneType) || emotionAnalysis.intensity >= 2) &&
         turnsSinceLastScene >= MIN_TURNS_BETWEEN_COMICS;
 
+      console.log(`Should Generate Scene Comic: ${shouldGenerateSceneComic}`);
+
       if (shouldGenerateSceneComic) {
         console.log(`Generating Scene Comic - Type: ${sceneType}, Emotion: ${emotionAnalysis.dominant}`);
-        
+
         const sceneComic = await generateSceneComic(currentStory, emotionAnalysis.dominant, sceneType);
-        
-        finalResponseText = `🎭 **Kyle's Archive Manifests a Visual Memory...** 🎭\n\n${sceneComic.text}`;
+
+        finalResponseText = `🎭 **A Visual Memory Manifests...** 🎭
+
+${sceneComic.text}`;
         finalImageUrl = sceneComic.imageUrl;
-        
+
         storyProgress[conversationId].lastSceneGenerated = storyProgress[conversationId].count;
 
         // HACKATHON FEATURE: Minted Mementos
         const memento = generateMemento(conversationId, text, emotionAnalysis.dominant);
         storyProgress[conversationId].mementos.push(memento.id);
-        
-        finalResponseText += `\n\n🏺 **Story Memento Created**: *${memento.type}* (${memento.rarity}) - Value: ${memento.value} SOL`;
+
+        finalResponseText += `
+
+🏺 **Story Memento Created**: *${memento.type}* (${memento.rarity}) - Value: ${memento.value} SOL`;
+
+        responseBody.mementoId = memento.id; // Add mementoId to the response
       }
     }
 
-    // HACKATHON FEATURE: Story Based Rewards with SWIG INTEGRATION
+    // HACKATHON FEATURE: Story Based Rewards
     const rewardInfo = calculateAdvancedReward(conversationId, userId);
-    if (rewardInfo && rewardInfo.tier !== storyProgress[conversationId].lastRewardTierAnnounced && !userSwigAction) {
-      const userWalletAddress = storyProgress[conversationId].userWalletAddress;
-      
-      if (userWalletAddress) {
-        // Generate Swig transfer prompt for reward
-        const rewardTransferPrompt = generateRewardTransferPrompt(userWalletAddress, rewardInfo, emotionAnalysis);
-        
-        finalResponseText = `🏆 **${rewardInfo.title} Achieved!** ${rewardInfo.emoji}\n\n${rewardTransferPrompt}`;
-        
-        // Track pending reward
-        storyProgress[conversationId].pendingRewards.push({
-          amount: rewardInfo.reward,
-          tier: rewardInfo.tier,
-          timestamp: new Date().toISOString(),
-          walletAddress: userWalletAddress
-        });
-      } else {
-        // Request wallet address first
-        finalResponseText = `🏆 **${rewardInfo.title} Achieved!** ${rewardInfo.emoji}\n\n*Kyle's ${emotionAnalysis.dominant} eyes gleam with generosity* "You've earned ${rewardInfo.reward} SOL, brave chronicler! Please share your wallet address so I can transfer your well-deserved rewards through my Swig wallet."`;
-      }
-      
+    if (rewardInfo && rewardInfo.tier !== storyProgress[conversationId].lastRewardTierAnnounced) {
+      finalResponseText = `🏆 **${rewardInfo.title} Achieved!** ${rewardInfo.emoji}\n\n*Kyle's ${emotionAnalysis.dominant} eyes gleam with generosity* "You've earned a virtual reward of ${rewardInfo.reward} SOL!"`;
+
       if (rewardInfo.nextTier) {
         const nextTierInfo = rewardTiers[rewardInfo.nextTier];
         finalResponseText += `\n\n🎯 **Next Goal**: Reach ${nextTierInfo.threshold} interactions to become a **${nextTierInfo.title}**`;
       }
-      
+
       storyProgress[conversationId].lastRewardTierAnnounced = rewardInfo.tier;
     }
 
     // HACKATHON FEATURE: Character User Memory - Kyle's confusion
     const shouldKyleBeConfused = KYLE_CONFUSION_TRIGGERS.some(trigger =>
       (originalUserMessage || text).toLowerCase().includes(trigger)
-    ) && storyMemory[conversationId].length > 10 && !userSwigAction;
+    ) && storyMemory[conversationId].length > 10;
 
     if (shouldKyleBeConfused) {
       const confusionResponses = [
-        `*Kyle's ${emotionAnalysis.dominant} gaze grows distant* The archives shift and blur... what thread of our tale were we following?`,
-        `*The Exiled Archivist touches his temple, ${emotionAnalysis.color} energy flickering* My memory crystals have grown clouded... remind me, friend?`,
-        `*Kyle's form wavers like ${emotionAnalysis.dominant} mist* The story threads have tangled in the cosmic winds... help me find our path again?`
+        `*My ${emotionAnalysis.dominant} gaze grows distant* The archives shift and blur... what thread of our tale were we following?`,
+        `*I touch my temple, ${emotionAnalysis.color} energy flickering* My memory crystals have grown clouded... remind me, friend?`,
+        `*My form wavers like ${emotionAnalysis.dominant} mist* The story threads have tangled in the cosmic winds... help me find our path again?`
       ];
       finalResponseText = confusionResponses[Math.floor(Math.random() * confusionResponses.length)];
       finalImageUrl = null;
@@ -622,13 +750,14 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
     // Set final response
     responseBody.text = finalResponseText;
     responseBody.imageUrl = finalImageUrl;
+    responseBody.audioUrl = finalAudioUrl;
     responseBody.saveModified = true;
-    
+
     // Add metadata for frontend
     responseBody.emotion = emotionAnalysis;
     responseBody.sceneType = sceneType;
     responseBody.storyProgress = storyProgress[conversationId];
-    responseBody.swigAction = userSwigAction;
+
 
     console.log("Final hackathon response:", JSON.stringify(responseBody, null, 2));
     return res.status(200).json(responseBody);
@@ -637,17 +766,36 @@ app.post('/webhook', verifySignatureMiddleware, async (req, res) => {
   return res.status(200).json({ ...req.body, saveModified: false });
 });
 
+process.on('SIGTERM', () => {
+  console.log('Received SIGTERM, cleaning up...');
+  if (keepAliveSystem) {
+    keepAliveSystem.stop();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('Received SIGINT, cleaning up...');
+  if (keepAliveSystem) {
+    keepAliveSystem.stop();
+  }
+  process.exit(0);
+});
+
+// Start keep-alive system
+startSelfPing();
+
 // HACKATHON FEATURE: Minted Mementos - Get mementos endpoint
 app.get('/mementos/:conversationId', (req, res) => {
   const { conversationId } = req.params;
   const conversationMementos = storyProgress[conversationId]?.mementos || [];
-  
+
   const mementos = conversationMementos.map(mementoId => storyMementos[mementoId]).filter(Boolean);
-  
+
   res.json({
     conversationId,
     mementos,
-    totalValue: mementos.reduce((sum, memento) => sum + memento.value, 0),
+
     count: mementos.length
   });
 });
@@ -656,14 +804,14 @@ app.get('/mementos/:conversationId', (req, res) => {
 app.get('/world-context/:conversationId', (req, res) => {
   const { conversationId } = req.params;
   const progress = storyProgress[conversationId] || { count: 0 };
-  
+
   // Generate dynamic world context based on story progress
   const currentHour = new Date().getHours();
   const timeOfDay = worldContext.timeOfDay[Math.floor(currentHour / 3)];
   const weather = worldContext.weather[Math.floor(Math.random() * worldContext.weather.length)];
   const location = worldContext.locations[Math.min(Math.floor(progress.count / 5), worldContext.locations.length - 1)];
   const ambience = worldContext.ambience[Math.floor(Math.random() * worldContext.ambience.length)];
-  
+
   res.json({
     conversationId,
     worldState: {
@@ -686,19 +834,130 @@ app.get('/debug/:roomId', (req, res) => {
   });
 });
 
+app.get('/audio-proxy', async (req, res) => {
+  const { text } = req.query;
+  if (!text) {
+    return res.status(400).send('Missing text parameter');
+  }
+
+  try {
+    const audioUrl = `https://text.pollinations.ai/${encodeURIComponent(text)}?model=openai-audio&voice=nova`;
+    const response = await fetch(audioUrl);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch audio: ${response.statusText}`);
+    }
+
+    // Set appropriate headers for audio streaming
+    res.setHeader('Content-Type', response.headers.get('Content-Type') || 'audio/mpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for a year
+    response.body.pipe(res);
+  } catch (error) {
+    console.error('Error proxying audio:', error);
+    res.status(500).send('Error proxying audio');
+  }
+});
+
+app.post('/prepare-mint', async (req, res) => {
+  const { mementoId, imageUrl, sceneType } = req.body;
+
+  if (!mementoId || !imageUrl || !sceneType) {
+    return res.status(400).send('Missing required fields');
+  }
+
+  const memento = storyMementos[mementoId];
+
+  if (!memento) {
+    return res.status(404).send('Memento not found');
+  }
+
+  try {
+    const umi = createUmi(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com")
+      .use(mplTokenMetadata())
+      .use(
+        irysUploader({
+          address: "https://devnet.irys.xyz",
+        })
+      );
+
+    const signer = generateSigner(umi);
+    umi.use(signerIdentity(signer));
+
+    await umi.rpc.airdrop(umi.identity.publicKey, sol(1));
+
+    const imageResponse = await fetch(imageUrl);
+    const imageBuffer = await imageResponse.buffer();
+    const umiImageFile = createGenericFile(imageBuffer, "memento.png", {
+      tags: [{ name: "Content-Type", value: "image/png" }],
+    });
+    const imageUri = await umi.uploader.upload([umiImageFile]);
+
+    const nftMetadata = {
+      name: `Echoes of Creation: ${memento.type}`,
+      description: memento.storySnippet,
+      image: imageUri[0],
+      attributes: [
+        {
+          trait_type: "Emotion",
+          value: memento.emotion,
+        },
+        {
+          trait_type: "Rarity",
+          value: memento.rarity,
+        },
+        {
+          trait_type: "Scene Type",
+          value: sceneType,
+        },
+      ],
+      properties: {
+        files: [
+          {
+            uri: imageUri[0],
+            type: "image/png",
+          },
+        ],
+        category: "image",
+      },
+    };
+
+    const metadataUri = await umi.uploader.uploadJson(nftMetadata);
+
+    res.json({ metadataUri });
+  } catch (error) {
+    console.error("Error preparing mint:", error);
+    res.status(500).send('Error preparing mint');
+  }
+});
+
+
 app.get('/', (req, res) => {
+  const stats = keepAliveSystem ? keepAliveSystem.getStats() : null;
+
   res.send(`
     <h1>🎭 Kyle's Enhanced Story Archive</h1>
+    <p>Status: <strong>ALIVE</strong> ✅</p>
+    <p>Uptime: ${Math.floor(process.uptime())} seconds</p>
+    <p>Keep-alive: ${keepAliveSystem && keepAliveSystem.isRunning ? 'ACTIVE' : 'INACTIVE'}</p>
+    ${stats ? `
+    <div style="background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 5px;">
+      <h3>📊 Keep-Alive Stats</h3>
+      <p>Total Pings: ${stats.totalPings}</p>
+      <p>Success Rate: ${stats.successRate}</p>
+      <p>Last Success: ${stats.lastSuccess ? new Date(stats.lastSuccess).toLocaleString() : 'N/A'}</p>
+      <p>Last Error: ${stats.lastError ? new Date(stats.lastError).toLocaleString() : 'N/A'}</p>
+    </div>
+    ` : ''}
     <p>Features:</p>
     <ul>
       <li>🎨 Scene Comics - Visual story panels</li>
-      <li>🏆 Story Based Rewards - Dynamic SOL rewards with Swig integration</li>
+      <li>🏆 Story Based Rewards - Dynamic SOL rewards</li>
       <li>😊 Visualized Emotions - Advanced emotion detection</li>
       <li>🎯 Targeted Conversations - Goal-oriented storytelling</li>
       <li>🌍 Rich World Context - Dynamic environmental storytelling</li>
       <li>🧠 Character User Memory - Limited memory system</li>
       <li>🏺 Minted Mementos - Story objects as NFTs</li>
-      <li>💸 Swig Wallet Integration - Create, manage, and transfer via Swig wallets</li>
+      <li>⚡ UptimeRobot-style Keep-Alive - Advanced uptime monitoring</li>
     </ul>
   `);
 });

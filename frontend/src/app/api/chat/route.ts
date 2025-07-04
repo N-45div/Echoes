@@ -3,11 +3,9 @@ import crypto from 'crypto';
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const userMessageText = body.message;
-
-  const agentId = '89b30336-e318-00ba-89d5-392b23085f7b'; // Kyle's agent ID
+  const { message: userMessageText, agentId } = body;
   const dreamNetApiUrl = `https://agents-api.doodles.app/${agentId}/user/message`;
-  const webhookUrl = 'https://echoes-of-creation-five.vercel.app/webhook';
+  const webhookUrl = 'https://echoes-of-creation-inky.vercel.app/webhook';
   const webhookSecret = process.env.WEBHOOK_SECRET;
   const dreamNetAppId = process.env.DREAMNET_APP_ID;
   const dreamNetAppSecret = process.env.DREAMNET_APP_SECRET;
@@ -20,10 +18,15 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // Generate consistent roomId and userId for the session
+    // In a real app, you'd use session IDs or user authentication
+    const sessionRoomId = req.cookies.get('roomId')?.value || 'room-' + Math.random().toString(36).substring(2, 15);
+    const sessionUserId = req.cookies.get('userId')?.value || 'user-' + Math.random().toString(36).substring(2, 15);
+
     // 1. Call DreamNet API
     const dreamNetRequestBody = JSON.stringify({
       text: userMessageText,
-      user: 'user', // Default user for hackathon
+      user: sessionUserId, // Use sessionUserId for unique conversation history with DreamNet
     });
 
     const dreamNetResponse = await fetch(dreamNetApiUrl, {
@@ -48,11 +51,6 @@ export async function POST(req: NextRequest) {
     const dreamNetAgentText = Array.isArray(dreamNetData) && dreamNetData.length > 0 
       ? dreamNetData[0].text 
       : 'DreamNet returned no text.';
-
-    // Generate consistent roomId and userId for the session
-    // In a real app, you'd use session IDs or user authentication
-    const sessionRoomId = req.cookies.get('roomId')?.value || 'room-' + Math.random().toString(36).substring(2, 15);
-    const sessionUserId = req.cookies.get('userId')?.value || 'user-' + Math.random().toString(36).substring(2, 15);
 
     // 2. Forward DreamNet response to your webhook for post-processing
     const webhookPayload = {

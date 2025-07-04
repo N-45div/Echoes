@@ -49,29 +49,39 @@ const emotionMap = {
 - Confusion triggers when users reference forgotten content
 - Realistic character behavior simulation
 
-### 🎬 **Blocking and Movement**
-*Problem: Agentic chat scenarios have vague spatial cues.*
+### 🏺 **Minted Mementos**
+*Problem: Story objects are ephemeral and not ownable.*
 
-**Solution**: Spatial descriptions and character movement integration
-- Story generation includes spatial context
-- Character positioning and movement descriptions
-- Environmental details in narrative responses
+**Solution**: On-chain NFT mementos minted to user's wallet
+- Story-generated images can be minted as unique NFTs.
+- Frontend-initiated minting using user's connected Solana wallet.
+- Backend prepares NFT metadata and uploads assets to Arweave via Irys.
+- Each memento is a permanent, verifiable record of a story moment.
+
+### 🎙️ **Audio Generation**
+*Problem: Text-only responses lack auditory immersion.*
+
+**Solution**: Dynamic audio synthesis for character responses
+- Pollinations AI generates natural-sounding speech from text.
+- Backend proxy ensures seamless audio playback, bypassing browser CORS restrictions.
+- Enhances character presence and user engagement.
 
 ## 🛠️ Technical Implementation
 
-### Core Blockchain Features (Swig Integration)
-```javascript
-// Complete smart wallet functionality
-CREATE_SWIG, GET_SWIG_BALANCE, TRANSFER_TO_SWIG,
-SWIG_TRANSFER_TO_ADDRESS, ADD_SWIG_AUTHORITY,
-GET_SWIG_TOKEN_BALANCE, TRANSFER_TOKEN_TO_SWIG
-```
+### Core Blockchain Features
+- **Client-Side NFT Minting**: Utilizes `@solana/wallet-adapter-react` and Umi for direct user wallet interaction.
+- **Backend Metadata Preparation**: `/prepare-mint` endpoint handles image upload to Arweave (via Irys) and metadata URI generation.
+- **Progressive SOL Rewards**: Swig smart wallet integration for dynamic rewards based on story engagement.
 
 ### Visual Generation Pipeline
 ```javascript
 // Multi-modal content creation
 Story Generation → Image Prompt Extraction → AI Visual Creation → Response Enhancement
 ```
+
+### Audio Proxy
+- **Server-side Proxy**: `/audio-proxy` endpoint fetches audio from Pollinations AI and streams it to the frontend.
+- **CORS Bypass**: Ensures audio playback reliability across different browser environments.
 
 ### Memory Management System
 ```javascript
@@ -96,9 +106,12 @@ const rewardTiers = {
 
 ### API Integrations
 - **OpenRouter AI**: Story generation with emotional context
-- **Pollinations AI**: Dynamic image creation
+- **Pollinations AI**: Dynamic image and audio creation
 - **Swig API**: Solana blockchain transactions
 - **Dreamnet Webhooks**: Character message processing
+- **Metaplex Umi**: Solana NFT standard implementation
+- **Solana Wallet Adapter**: Frontend wallet connectivity
+- **Irys**: Decentralized storage for NFT assets
 
 ### Security & Reliability
 - HMAC-SHA256 signature verification
@@ -115,21 +128,38 @@ const rewardTiers = {
 ## 📡 Key Endpoints
 
 - **POST** `/webhook` - Main Dreamnet integration
-- **GET** `/test-image` - Visual generation testing
-- **GET** `/debug/:roomId` - Memory and progress tracking
+- **POST** `/prepare-mint` - Prepares NFT metadata for client-side minting
+- **GET** `/audio-proxy` - Proxies audio content to resolve CORS issues
+- **GET** `/mementos/:conversationId` - Retrieves minted mementos for a conversation
+- **GET** `/world-context/:conversationId` - Provides dynamic world state information
+- **GET** `/debug/:roomId` - Memory and progress tracking (for development)
 
 ## 🔧 Setup
 
+### Backend (Webhook)
 ```bash
 # Environment variables
 WEBHOOK_SECRET=your_dreamnet_secret
 OPENROUTER_API_KEY=your_openrouter_key
+SOLANA_RPC_URL=https://api.devnet.solana.com # Or your preferred Solana RPC
 
 # Deploy
 vercel --prod
 ```
 
 **Webhook URL**: `https://your-app.vercel.app/webhook`
+
+### Frontend (Next.js App)
+```bash
+# Navigate to the frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Run the development server
+npm run dev
+```
 
 ---
 
