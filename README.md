@@ -4,6 +4,11 @@
 > **Dreamnet Character Agent Hackathon Entry**  
 > Addressing core limitations in AI storytelling through blockchain integration, visual generation, and dynamic interactions.
 
+
+## Demo Video 
+
+https://github.com/user-attachments/assets/55c56e1f-495e-4847-a844-5b89d4c6279f
+
 ## 🎯 Hackathon Challenge Solutions
 
 ### 🎨 **Scene Comics**
@@ -19,14 +24,7 @@
 *Problem: Chat storytelling misses key visual triggers in understanding emotions.*
 
 **Solution**: Emotional intelligence system with adaptive responses
-```javascript
-const emotionMap = {
-  mysterious: ['whisper', 'shadow', 'secret'],
-  excited: ['amazing', 'incredible', 'wow'],
-  melancholy: ['sad', 'lonely', 'lost'],
-  chaotic: ['chaos', 'wild', 'crazy']
-};
-```
+
 - Emotion detection from user input
 - Adaptive story generation based on mood
 - Visual content matching emotional context
@@ -70,10 +68,6 @@ const emotionMap = {
 Story Generation → Image Prompt Extraction → AI Visual Creation → Response Enhancement
 ```
 
-### Audio Proxy
-- **Server-side Proxy**: `/audio-proxy` endpoint fetches audio from Pollinations AI and streams it to the frontend.
-- **CORS Bypass**: Ensures audio playback reliability across different browser environments.
-
 ### Memory Management System
 ```javascript
 // Realistic character limitations
@@ -82,7 +76,7 @@ if (storyMemory[conversationId].length >= MEMORY_LIMIT) {
 }
 ```
 
-### Reward Calculation for fun to interact with users
+### Virtual Reward Calculation for fun interaction with users.
 ```javascript
 // Progressive engagement rewards
 const rewardTiers = {
@@ -98,7 +92,6 @@ const rewardTiers = {
 ### API Integrations
 - **OpenRouter AI**: Story generation with emotional context
 - **Pollinations AI**: Dynamic image and audio creation
-- **Solana Blockchain**: Transactions for rewards and NFTs
 - **Dreamnet Webhooks**: Character message processing
 - **Metaplex Umi**: Solana NFT standard implementation
 - **Solana Wallet Adapter**: Frontend wallet connectivity
@@ -132,6 +125,15 @@ const rewardTiers = {
 WEBHOOK_SECRET=your_dreamnet_secret
 OPENROUTER_API_KEY=your_openrouter_key
 SOLANA_RPC_URL=https://api.devnet.solana.com # Or your preferred Solana RPC
+
+```
+
+### Frontend
+```bash
+# Environment variables
+WEBHOOK_SECRET=your_dreamnet_secret
+DREAMNET_APP_ID=
+DREAMNET_APP_SECRET=
 
 ```
 
