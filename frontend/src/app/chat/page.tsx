@@ -4,7 +4,7 @@
 'use client';
 
 import { useState, FormEvent, useRef, useEffect } from 'react';
-import { MicrophoneIcon } from '@heroicons/react/24/solid';
+import { MicrophoneIcon, Bars3Icon } from '@heroicons/react/24/solid';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -123,16 +123,25 @@ export default function Chat() {
       });
 
       const data = await response.json();
+      console.log('API response data:', data);
 
       if (!response.ok) {
         throw new Error(data.message || 'Network response was not ok');
       }
 
+      const responseText = data.text;
+      const imageUrl = data.imageUrl;
+
+      // The text from the webhook is already the final, desired text.
+      const finalDisplayText = responseText;
+
+      const audioUrl = `https://text.pollinations.ai/${encodeURIComponent(finalDisplayText)}?model=openai-audio&voice=nova`;
+
       const botMessage: ChatMessage = {
         type: 'bot',
-        text: data.text,
-        imageUrl: data.imageUrl,
-        audioUrl: data.audioUrl,
+        text: finalDisplayText,
+        imageUrl,
+        audioUrl,
         mementoId: data.mementoId,
         sceneType: data.sceneType,
       };
@@ -207,7 +216,9 @@ export default function Chat() {
     setLoadingMemories(true);
     setMemoriesError(null);
     try {
-      const response = await fetch(`/api/memories?agentId=${selectedAgentId}`);
+      const fetchUrl = `/api/memories?agentId=${selectedAgentId}`;
+      console.log('Fetching memories from:', fetchUrl);
+      const response = await fetch(fetchUrl);
       if (!response.ok) {
         const errData = await response.json();
         throw new Error(errData.message || 'Failed to fetch memories');
@@ -351,28 +362,7 @@ export default function Chat() {
           )}
           <audio ref={audioRef} onEnded={() => setPlayingAudio(null)} />
         </div>
-        {isMemoriesPanelOpen && (
-          <div className="w-1/4 bg-gray-800 p-6 border-l border-gray-700 overflow-y-auto custom-scrollbar">
-            <h2 className="text-xl font-bold mb-4">Memories</h2>
-            {loadingMemories ? (
-              <p>Loading memories...</p>
-            ) : memoriesError ? (
-              <p className="text-red-400">Error: {memoriesError}</p>
-            ) : memories.length === 0 ? (
-              <p>No memories found for this agent.</p>
-            ) : (
-              <ul>
-                {memories.map((memory, idx) => (
-                  <li key={idx} className="mb-2 p-2 bg-gray-700 rounded-md">
-                    <p className="text-sm"><strong>Role:</strong> {memory.role}</p>
-                    <p className="text-sm"><strong>Content:</strong> {memory.content}</p>
-                    <p className="text-xs text-gray-400">{new Date(memory.timestamp).toLocaleString()}</p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
+
       </div>
       <form onSubmit={handleSubmit} className="p-6 bg-gray-800 border-t border-gray-700 shadow-2xl">
         <div className="flex items-center space-x-4">

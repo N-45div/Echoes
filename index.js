@@ -750,7 +750,7 @@ ${sceneComic.text}`;
     // Set final response
     responseBody.text = finalResponseText;
     responseBody.imageUrl = finalImageUrl;
-    responseBody.audioUrl = finalAudioUrl;
+    responseBody.audioText = text; // Pass original text for frontend audio generation
     responseBody.saveModified = true;
 
     // Add metadata for frontend

@@ -15,15 +15,6 @@
 - Automatic image embedding in character responses
 - Multiple fallback services for reliability
 
-### 💰 **Story Based Rewards**
-*Problem: Chatbots cannot share value with their users.*
-
-**Solution**: Swig smart wallet integration with progressive SOL rewards
-- 4-tier reward system (Bronze: 0.05 SOL → Legendary: 0.5 SOL)
-- Automatic wallet address detection
-- Story progress tracking for reward calculation
-- Real blockchain transactions as narrative elements
-
 ### 🎭 **Visualized Emotions**
 *Problem: Chat storytelling misses key visual triggers in understanding emotions.*
 
@@ -91,7 +82,7 @@ if (storyMemory[conversationId].length >= MEMORY_LIMIT) {
 }
 ```
 
-### Reward Calculation
+### Reward Calculation for fun to interact with users
 ```javascript
 // Progressive engagement rewards
 const rewardTiers = {
@@ -107,7 +98,7 @@ const rewardTiers = {
 ### API Integrations
 - **OpenRouter AI**: Story generation with emotional context
 - **Pollinations AI**: Dynamic image and audio creation
-- **Swig API**: Solana blockchain transactions
+- **Solana Blockchain**: Transactions for rewards and NFTs
 - **Dreamnet Webhooks**: Character message processing
 - **Metaplex Umi**: Solana NFT standard implementation
 - **Solana Wallet Adapter**: Frontend wallet connectivity
@@ -129,7 +120,6 @@ const rewardTiers = {
 
 - **POST** `/webhook` - Main Dreamnet integration
 - **POST** `/prepare-mint` - Prepares NFT metadata for client-side minting
-- **GET** `/audio-proxy` - Proxies audio content to resolve CORS issues
 - **GET** `/mementos/:conversationId` - Retrieves minted mementos for a conversation
 - **GET** `/world-context/:conversationId` - Provides dynamic world state information
 - **GET** `/debug/:roomId` - Memory and progress tracking (for development)
@@ -143,11 +133,7 @@ WEBHOOK_SECRET=your_dreamnet_secret
 OPENROUTER_API_KEY=your_openrouter_key
 SOLANA_RPC_URL=https://api.devnet.solana.com # Or your preferred Solana RPC
 
-# Deploy
-vercel --prod
 ```
-
-**Webhook URL**: `https://your-app.vercel.app/webhook`
 
 ### Frontend (Next.js App)
 ```bash
